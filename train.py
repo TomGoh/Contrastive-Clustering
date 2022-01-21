@@ -3,9 +3,40 @@ import numpy as np
 import torch
 import torchvision
 import argparse
+
+from cluster import inference
+from evaluation import evaluation
 from modules import transform, resnet, network, contrastive_loss
 from utils import yaml_config_hook, save_model
 from torch.utils import data
+
+
+# def inference_alt(loader, model):
+#     model.eval()
+#     feature_vector = []
+#     labels_vector = []
+#     for step, (x, y) in enumerate(loader):
+#         x = x.to('cuda')
+#         with torch.no_grad():
+#             c = model.forward_cluster(x)
+#         c = c.detach()
+#         feature_vector.extend(c.cpu().detach().numpy())
+#         labels_vector.extend(y.numpy())
+#         if step % 20 == 0:
+#             print(f"Step [{step}/{len(loader)}]\t Computing features...")
+#     feature_vector = np.array(feature_vector)
+#     labels_vector = np.array(labels_vector)
+#     print("Features shape {}".format(feature_vector.shape))
+#     return feature_vector, labels_vector
+
+
+def test():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    X, Y = inference(test_loader, model, device)
+    # print(X.shape,Y.shape)
+    nmi, ari, f, acc = evaluation.evaluate(Y, X)
+    # print('NMI = {:.4f} ARI = {:.4f} F = {:.4f} ACC = {:.4f}'.format(nmi, ari, f, acc))
+    return nmi, ari, f, acc
 
 
 def train():
@@ -20,7 +51,7 @@ def train():
         loss = loss_instance + loss_cluster
         loss.backward()
         optimizer.step()
-        if step % 50 == 0:
+        if step % 10 == 0:
             print(
                 f"Step [{step}/{len(data_loader)}]\t loss_instance: {loss_instance.item()}\t loss_cluster: {loss_cluster.item()}")
         loss_epoch += loss.item()
@@ -54,6 +85,12 @@ if __name__ == "__main__":
             download=True,
             train=False,
             transform=transform.Transforms(size=args.image_size, s=0.5),
+        )
+        test_dataset_alt = torchvision.datasets.CIFAR10(
+            root='args.dataset_dir',
+            download=True,
+            train=False,
+            transform=transform.Transforms(s=0.5, size=args.image_size).test_transform,
         )
         dataset = data.ConcatDataset([train_dataset, test_dataset])
         class_num = 10
@@ -90,6 +127,24 @@ if __name__ == "__main__":
             transform=transform.Transforms(s=0.5, size=args.image_size),
         )
         class_num = 200
+
+    elif args.dataset == "mini-ImageNet":
+        train_dataset = torchvision.datasets.ImageFolder(
+            root='datasets/mini-ImageNet/10/train',
+            transform=transform.Transforms(s=0.5, size=args.image_size),
+        )
+        test_dataset = torchvision.datasets.ImageFolder(
+            root='datasets/mini-ImageNet/10/test',
+            transform=transform.Transforms(s=0.5, size=args.image_size),
+        )
+
+        test_dataset_alt = torchvision.datasets.ImageFolder(
+            root='datasets/mini-ImageNet/10/test',
+            transform=transform.Transforms(s=0.5, size=args.image_size).test_transform,
+        )
+        dataset = data.ConcatDataset([train_dataset, test_dataset])
+        class_num = 10
+
     else:
         raise NotImplementedError
     data_loader = torch.utils.data.DataLoader(
@@ -99,6 +154,16 @@ if __name__ == "__main__":
         drop_last=True,
         num_workers=args.workers,
     )
+
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset_alt,
+        batch_size=args.batch_size,
+        shuffle=False,
+        drop_last=False,
+        num_workers=args.workers,
+    )
+
+
     # initialize model
     res = resnet.get_resnet(args.resnet)
     model = network.Network(res, args.feature_dim, class_num)
@@ -121,5 +186,9 @@ if __name__ == "__main__":
         loss_epoch = train()
         if epoch % 10 == 0:
             save_model(args, model, optimizer, epoch)
-        print(f"Epoch [{epoch}/{args.epochs}]\t Loss: {loss_epoch / len(data_loader)}")
+        print(f"\nEpoch [{epoch}/{args.epochs}]\t Loss: {loss_epoch / len(data_loader)} \n")
+        nmi, ari, f, acc = test()
+        print('Test NMI = {:.4f} ARI = {:.4f} F = {:.4f} ACC = {:.4f}'.format(nmi, ari, f, acc))
+        print('========'*8+'\n')
+            # print(f"\nEpoch [{epoch}/{args.epochs}]\t Test Loss: {test_loss_epoch / len(test_loader)} \n")
     save_model(args, model, optimizer, args.epochs)
